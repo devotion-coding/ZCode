@@ -125,8 +125,9 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 - `MainActivity`：`configChanges`、`windowSoftInputMode=adjustResize`、`launchMode=singleTop`
 - 权限包含 `INTERNET`、`CAMERA`、`RECORD_AUDIO`、`FOREGROUND_SERVICE_DATA_SYNC`
 
-在无 `/dev/kvm` 的 x86_64 软件模拟器（TCG，Android 11 / API 30）上使用 Debug 包完成：
+在无 `/dev/kvm` 的 x86_64 软件模拟器（TCG，Android 11 / API 30）上完成：
 
+- 正式签名包安装、冷启动并显示远控首页；
 - 冷启动、首页渲染、WebView 加载本地测试页；
 - 软键盘弹出时 WebView 从 `360x520` 缩到 `360x257`，输入框保持在键盘上方；
 - 横竖屏切换后页面 `marker` 和 `loads` 不变，确认未重载；横屏三键导航栏不再压住 Close；
