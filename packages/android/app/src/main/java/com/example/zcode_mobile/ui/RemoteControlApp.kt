@@ -2,6 +2,8 @@ package com.example.zcode_mobile.ui
 
 import android.annotation.SuppressLint
 import android.Manifest
+import android.app.Activity
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
 import android.content.Intent
@@ -9,6 +11,9 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.PermissionRequest
+import android.webkit.RenderProcessGoneDetail
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -19,6 +24,7 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -29,9 +35,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -52,13 +61,16 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -95,6 +107,7 @@ fun RemoteControlApp(
     var scannerOpen by rememberSaveable { mutableStateOf(false) }
     var launcherError by rememberSaveable { mutableStateOf<String?>(null) }
     val cameraPermissionDenied = stringResource(R.string.remote_scan_permission_denied)
+    val scanInvalidMessage = stringResource(R.string.remote_scan_invalid)
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -122,7 +135,7 @@ fun RemoteControlApp(
                         scannerOpen = false
                         launcherError = null
                     } else {
-                        launcherError = context.getString(R.string.remote_scan_invalid)
+                        launcherError = scanInvalidMessage
                     }
                     opened
                 },
@@ -355,6 +368,7 @@ private fun bindRemoteQrCamera(
     )
 }
 
+@androidx.annotation.OptIn(ExperimentalGetImage::class)
 private fun analyzeRemoteQrImage(
     scanner: BarcodeScanner,
     imageProxy: ImageProxy,
@@ -402,13 +416,14 @@ private fun RemoteControlLauncher(
     var input by rememberSaveable { mutableStateOf("") }
     var localError by rememberSaveable { mutableStateOf<String?>(null) }
     val invalidUrlMessage = stringResource(R.string.remote_url_invalid)
+    val pasteEmptyMessage = stringResource(R.string.remote_paste_empty)
     val visibleError = localError ?: errorMessage
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
-            .navigationBarsPadding()
+            .bottomInsetPadding()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.Center,
@@ -436,6 +451,27 @@ private fun RemoteControlLauncher(
             minLines = 2,
             label = { Text(stringResource(R.string.remote_url_label)) },
             placeholder = { Text(stringResource(R.string.remote_url_placeholder)) },
+            trailingIcon = {
+                TextButton(
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                        val text = clipboard?.primaryClip
+                            ?.takeIf { it.itemCount > 0 }
+                            ?.getItemAt(0)
+                            ?.coerceToText(context)
+                            ?.toString()
+                            ?.trim()
+                        if (text.isNullOrEmpty()) {
+                            localError = pasteEmptyMessage
+                        } else {
+                            input = text
+                            localError = null
+                        }
+                    },
+                ) {
+                    Text(stringResource(R.string.remote_paste_button))
+                }
+            },
             isError = visibleError != null,
             supportingText = {
                 visibleError?.let {
@@ -520,10 +556,56 @@ private fun RemoteControlWebViewScreen(
     onCloseRemote: () -> Unit,
 ) {
     val context = LocalContext.current
+    val backgroundColor = MaterialTheme.colorScheme.background.toArgb()
+    val rendererGoneMessage = stringResource(R.string.remote_renderer_gone)
     var webView by remember { mutableStateOf<WebView?>(null) }
     var progress by remember { mutableStateOf(0) }
     var isLoading by remember { mutableStateOf(true) }
     var pageError by remember { mutableStateOf<String?>(null) }
+    var webViewGeneration by remember { mutableStateOf(0) }
+    var pendingFileChooser by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    var pendingPermissionRequest by remember { mutableStateOf<PermissionRequest?>(null) }
+
+    val fileChooserLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val callback = pendingFileChooser
+        pendingFileChooser = null
+        if (callback == null) {
+            return@rememberLauncherForActivityResult
+        }
+        if (result.resultCode != Activity.RESULT_OK) {
+            callback.onReceiveValue(null)
+            return@rememberLauncherForActivityResult
+        }
+        val data = result.data
+        val clipData = data?.clipData
+        val uris = when {
+            clipData != null -> Array(clipData.itemCount) { index ->
+                clipData.getItemAt(index).uri
+            }
+            data?.data != null -> arrayOf(data.data!!)
+            else -> emptyArray()
+        }
+        callback.onReceiveValue(uris.takeIf { it.isNotEmpty() })
+    }
+
+    // 网页端语音输入走 navigator.mediaDevices.getUserMedia({audio: true})，
+    // 需要原生侧同时持有 RECORD_AUDIO 并在 WebChromeClient 中授权，否则点麦克风只会失败。
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        val request = pendingPermissionRequest
+        pendingPermissionRequest = null
+        if (request == null) {
+            return@rememberLauncherForActivityResult
+        }
+        if (granted) {
+            runCatching { request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) }
+        } else {
+            runCatching { request.deny() }
+        }
+    }
 
     BackHandler {
         val view = webView
@@ -536,7 +618,10 @@ private fun RemoteControlWebViewScreen(
 
     DisposableEffect(Unit) {
         onDispose {
-            webView?.destroy()
+            pendingFileChooser?.onReceiveValue(null)
+            pendingFileChooser = null
+            pendingPermissionRequest?.let { request -> runCatching { request.deny() } }
+            pendingPermissionRequest = null
             webView = null
         }
     }
@@ -557,33 +642,97 @@ private fun RemoteControlWebViewScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
-        Box(modifier = Modifier.fillMaxSize()) {
-            AndroidView(
-                modifier = Modifier.fillMaxSize(),
-                factory = {
-                    createRemoteControlWebView(
-                        context = context,
-                        onLoadingChanged = { loading ->
-                            isLoading = loading
-                        },
-                        onProgressChanged = { nextProgress ->
-                            progress = nextProgress
-                        },
-                        onMainFrameError = { message ->
-                            pageError = message
-                        },
-                    ).also { view ->
-                        webView = view
-                        view.loadUrl(remoteUrl)
-                    }
-                },
-                update = { view ->
-                    if (view.url != remoteUrl) {
-                        pageError = null
-                        view.loadUrl(remoteUrl)
-                    }
-                },
-            )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .bottomInsetPadding(),
+        ) {
+            // 只在新远控链接或渲染进程重建时换 WebView。SPA 内部跳转、hash 变化、
+            // 重定向后的 view.url 都不等于 remoteUrl，以前用 update 比较会导致页面被反复重载。
+            key(remoteUrl, webViewGeneration) {
+                AndroidView(
+                    modifier = Modifier.fillMaxSize(),
+                    factory = {
+                        createRemoteControlWebView(
+                            context = context,
+                            backgroundColor = backgroundColor,
+                            onLoadingChanged = { loading ->
+                                isLoading = loading
+                            },
+                            onProgressChanged = { nextProgress ->
+                                progress = nextProgress
+                            },
+                            onMainFrameError = { message ->
+                                pageError = message
+                            },
+                            onShowFileChooser = { params, callback ->
+                                pendingFileChooser?.onReceiveValue(null)
+                                pendingFileChooser = callback
+                                val intent = runCatching { params.createIntent() }
+                                    .getOrElse {
+                                        Intent(Intent.ACTION_GET_CONTENT).apply {
+                                            type = params.acceptTypes.firstOrNull() ?: "*/*"
+                                            addCategory(Intent.CATEGORY_OPENABLE)
+                                            putExtra(
+                                                Intent.EXTRA_ALLOW_MULTIPLE,
+                                                params.mode ==
+                                                    WebChromeClient.FileChooserParams.MODE_OPEN_MULTIPLE,
+                                            )
+                                        }
+                                    }
+                                runCatching { fileChooserLauncher.launch(intent) }
+                                    .onFailure {
+                                        pendingFileChooser = null
+                                        callback.onReceiveValue(null)
+                                    }
+                                true
+                            },
+                            onPermissionRequest = { request ->
+                                if (request.resources.contains(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) {
+                                    if (
+                                        ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO,
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        runCatching {
+                                            request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE))
+                                        }
+                                    } else {
+                                        pendingPermissionRequest?.let { pending ->
+                                            runCatching { pending.deny() }
+                                        }
+                                        pendingPermissionRequest = request
+                                        audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                    }
+                                } else {
+                                    runCatching { request.deny() }
+                                }
+                            },
+                            onRendererGone = {
+                                // WebView 渲染进程已崩溃，view 也已经不可用。换 generation 让
+                                // Compose 创建新的 WebView；不处理这个回调会直接杀掉 App。
+                                webView = null
+                                pageError = rendererGoneMessage
+                                webViewGeneration += 1
+                            },
+                        ).also { view ->
+                            webView = view
+                            view.loadUrl(remoteUrl)
+                        }
+                    },
+                    update = { },
+                    onRelease = { view ->
+                        // 换链接或渲染进程重建时旧 WebView 也要销毁，否则会泄漏
+                        // WebView 及其渲染进程；屏幕关闭时同样走这里。
+                        if (webView === view) {
+                            webView = null
+                        }
+                        runCatching { view.destroy() }
+                    },
+                )
+            }
             if (pageError != null) {
                 RemoteControlErrorOverlay(
                     message = pageError.orEmpty(),
@@ -680,12 +829,17 @@ private fun RemoteControlErrorOverlay(
 
 @SuppressLint("SetJavaScriptEnabled")
 private fun createRemoteControlWebView(
-    context: android.content.Context,
+    context: Context,
+    backgroundColor: Int,
     onLoadingChanged: (Boolean) -> Unit,
     onProgressChanged: (Int) -> Unit,
     onMainFrameError: (String) -> Unit,
+    onShowFileChooser: (WebChromeClient.FileChooserParams, ValueCallback<Array<Uri>>) -> Boolean,
+    onPermissionRequest: (PermissionRequest) -> Unit,
+    onRendererGone: () -> Unit,
 ): WebView {
     CookieManager.getInstance().setAcceptCookie(true)
+    var authFlowActive = false
 
     return WebView(context).apply {
         layoutParams = ViewGroup.LayoutParams(
@@ -693,6 +847,9 @@ private fun createRemoteControlWebView(
             ViewGroup.LayoutParams.MATCH_PARENT,
         )
         overScrollMode = WebView.OVER_SCROLL_NEVER
+        isVerticalScrollBarEnabled = false
+        isHorizontalScrollBarEnabled = false
+        setBackgroundColor(backgroundColor)
         settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -704,15 +861,47 @@ private fun createRemoteControlWebView(
             allowFileAccess = false
             allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            useWideViewPort = true
+            loadWithOverviewMode = false
+            // 滚动时提前光栅化屏幕外区域，减少长对话列表的掉帧。
+            setOffscreenPreRaster(true)
             userAgentString = "$userAgentString ZCodeAndroid/${BuildConfig.VERSION_NAME}"
         }
         webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 onProgressChanged(newProgress)
             }
+
+            override fun onShowFileChooser(
+                webView: WebView?,
+                filePathCallback: ValueCallback<Array<Uri>>?,
+                fileChooserParams: FileChooserParams?,
+            ): Boolean {
+                if (fileChooserParams == null || filePathCallback == null) {
+                    return false
+                }
+                return onShowFileChooser(fileChooserParams, filePathCallback)
+            }
+
+            override fun onPermissionRequest(request: PermissionRequest?) {
+                if (request == null) {
+                    return
+                }
+                onPermissionRequest(request)
+            }
         }
         webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                // OAuth 登录页必须留在当前 WebView 才能把 token 写进同一份 localStorage；
+                // 回到 /remote 后立即恢复“只允许远控页面”的导航策略。
+                val uri = url?.let { runCatching { Uri.parse(it) }.getOrNull() }
+                if (uri != null) {
+                    if (RemoteControlUrlPolicy.isAuthFlowUrl(uri)) {
+                        authFlowActive = true
+                    } else if (RemoteControlUrlPolicy.isRemotePageUrl(uri)) {
+                        authFlowActive = false
+                    }
+                }
                 onLoadingChanged(true)
             }
 
@@ -728,16 +917,30 @@ private fun createRemoteControlWebView(
                     return false
                 }
 
-                val resolved = RemoteControlUrlPolicy.resolve(request.url)
-                if (resolved != null) {
-                    if (request.url.scheme == "zcode") {
+                val uri = request.url
+                if (uri.scheme == "zcode") {
+                    val resolved = RemoteControlUrlPolicy.resolve(uri)
+                    if (resolved != null) {
                         view.loadUrl(resolved)
-                        return true
+                    } else {
+                        openExternalUrl(view.context, uri)
+                    }
+                    return true
+                }
+
+                if (RemoteControlUrlPolicy.isAuthFlowUrl(uri)) {
+                    authFlowActive = true
+                    return false
+                }
+
+                if (RemoteControlUrlPolicy.isAllowedWebViewNavigation(uri, authFlowActive)) {
+                    if (RemoteControlUrlPolicy.isRemotePageUrl(uri)) {
+                        authFlowActive = false
                     }
                     return false
                 }
 
-                openExternalUrl(view.context, request.url)
+                openExternalUrl(view.context, uri)
                 return true
             }
 
@@ -750,10 +953,39 @@ private fun createRemoteControlWebView(
                     return
                 }
                 onLoadingChanged(false)
-                onMainFrameError(error?.description?.toString().orEmpty())
+                onMainFrameError(
+                    error?.description?.toString()?.takeIf { it.isNotBlank() }
+                        ?: context.getString(R.string.remote_load_failed_title),
+                )
+            }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?,
+            ): Boolean {
+                // 渲染进程崩溃时必须先销毁当前 WebView 再重建；不处理这个回调，
+                // Android 会认为 App 没有恢复能力并直接杀掉进程。
+                view?.destroy()
+                onRendererGone()
+                return true
             }
         }
     }
+}
+
+/**
+ * 只加“键盘和导航栏中较高的那一个”的底部间距。
+ * 分开叠加 navigationBarsPadding + imePadding 会在键盘弹出时重复计算导航栏高度，
+ * 导致输入框与键盘之间多出一截空白。
+ */
+@Composable
+private fun Modifier.bottomInsetPadding(): Modifier {
+    val density = LocalDensity.current
+    val bottomPx = maxOf(
+        WindowInsets.ime.getBottom(density),
+        WindowInsets.navigationBars.getBottom(density),
+    )
+    return padding(bottom = with(density) { bottomPx.toDp() })
 }
 
 private fun openExternalUrl(context: android.content.Context, uri: Uri) {

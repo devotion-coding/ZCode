@@ -59,6 +59,14 @@ class MainActivity : ComponentActivity() {
         remoteUrl?.let { outState.putString(KEY_REMOTE_URL, it) }
     }
 
+    override fun onDestroy() {
+        // 用户真正退出 App（而不是转屏/分屏重建）时结束保活通知，避免留下孤儿前台服务。
+        if (isFinishing) {
+            RemoteControlKeepAliveService.stop(this)
+        }
+        super.onDestroy()
+    }
+
     private fun openRemoteUrl(rawUrl: String): Boolean {
         val resolvedUrl = RemoteControlUrlPolicy.resolve(rawUrl) ?: return false
         recentLinks = RemoteControlRecentLinksStore.record(this, resolvedUrl)
