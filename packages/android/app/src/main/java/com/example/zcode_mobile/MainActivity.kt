@@ -12,6 +12,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
 import com.example.zcode_mobile.remote.RemoteControlKeepAliveService
 import com.example.zcode_mobile.remote.RemoteControlRecentLink
 import com.example.zcode_mobile.remote.RemoteControlRecentLinksStore
@@ -54,6 +55,13 @@ class MainActivity : ComponentActivity() {
         resolveRemoteUrlFromIntent(intent)?.let { openRemoteUrl(it) }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 如果首帧还没画完就被切到后台，post 里的启动会被生命周期检查跳过；
+        // 回到前台时补一次，保证远控页有保活通知。
+        scheduleKeepAliveStart()
+    }
+
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         remoteUrl?.let { outState.putString(KEY_REMOTE_URL, it) }
@@ -73,8 +81,24 @@ class MainActivity : ComponentActivity() {
         remoteUrl = resolvedUrl
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         requestNotificationPermissionIfNeeded()
-        RemoteControlKeepAliveService.start(this, resolvedUrl)
+
+        // Bugfix: 冷启动时主线程紧接着要构建 Compose/WebView。如果在这里直接
+        // startForegroundService，服务的 onStartCommand 可能 5 秒内排不上主线程，
+        // Android 会抛 RemoteServiceException 并杀掉进程。推迟到首帧之后启动。
+        scheduleKeepAliveStart()
         return true
+    }
+
+    private fun scheduleKeepAliveStart() {
+        val url = remoteUrl ?: return
+        window.decorView.post {
+            // 首帧前被切到后台时不要从后台启动前台服务（Android 12+ 会拒绝）；
+            // 下一次 onResume 会重新调度。
+            if (remoteUrl != url || !lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                return@post
+            }
+            RemoteControlKeepAliveService.start(this, url)
+        }
     }
 
     private fun closeRemote() {

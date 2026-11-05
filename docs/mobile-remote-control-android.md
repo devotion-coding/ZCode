@@ -35,11 +35,15 @@ localStorage 拿不到 token，用户会一直停在登录页。外部普通链�
 - `windowSoftInputMode=adjustResize`；Compose 只增加「键盘或导航栏中较高者」的底部间距，避免
   输入框被键盘遮挡，也避免键盘弹出时重复叠加导航栏高度。
 - WebView 仅在远控链接变化或渲染进程重建时创建；不再用 `view.url != remoteUrl` 在
-  `update` 中反复 `loadUrl`，SPA 内跳转、hash 变化和重定向不会导致页面重载。
+  `update` 中反复 `loadUrl`，SPA 内跳转、hash 变化和重定向不会导致页面重载；新链接会重置
+  上一台设备残留的加载错误覆盖层。
 - `WebChromeClient.onShowFileChooser` 接入系统文件选择器，支持网页附件和多选。
 - `RECORD_AUDIO` + `WebChromeClient.onPermissionRequest` 支持网页语音输入。
 - `WebViewClient.onRenderProcessGone` 销毁旧 WebView 并重建页面，避免渲染进程崩溃时杀掉 App。
 - 旧 WebView 在换链接/页面销毁时调用 `destroy()`，避免泄漏渲染进程。
+- 横屏三键导航栏贴右侧时，顶栏与 WebView 只避开横向导航栏 inset，Close 等按钮不会被压住。
+- 前台保活服务推迟到首帧之后启动，并用生命周期检查避免从后台启动；冷启动慢设备不会触发
+  `startForegroundService()` 5 秒超时的 `RemoteServiceException`。
 - 单例 Activity；任务移除时停止前台服务；退出时清理保活通知。
 
 ## 扫码

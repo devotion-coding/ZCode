@@ -71,6 +71,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -167,10 +168,14 @@ fun RemoteControlApp(
                 onClearRecentLinks = onClearRecentLinks,
             )
         } else {
-            RemoteControlWebViewScreen(
-                remoteUrl = remoteUrl,
-                onCloseRemote = onCloseRemote,
-            )
+            // 新的远控链接是一个新的会话：重置进度、错误覆盖层和 WebView generation，
+            // 避免上一台设备的 ERR_* 提示盖在新页面上。
+            key(remoteUrl) {
+                RemoteControlWebViewScreen(
+                    remoteUrl = remoteUrl,
+                    onCloseRemote = onCloseRemote,
+                )
+            }
         }
     }
 }
@@ -202,6 +207,7 @@ private fun RemoteControlQrScanner(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(56.dp)
+                    .horizontalNavigationBarsPadding()
                     .padding(horizontal = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -423,6 +429,7 @@ private fun RemoteControlLauncher(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
+            .horizontalNavigationBarsPadding()
             .bottomInsetPadding()
             .verticalScroll(rememberScrollState())
             .padding(20.dp),
@@ -646,6 +653,7 @@ private fun RemoteControlWebViewScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
+                .horizontalNavigationBarsPadding()
                 .bottomInsetPadding(),
         ) {
             // 只在新远控链接或渲染进程重建时换 WebView。SPA 内部跳转、hash 变化、
@@ -659,6 +667,10 @@ private fun RemoteControlWebViewScreen(
                             backgroundColor = backgroundColor,
                             onLoadingChanged = { loading ->
                                 isLoading = loading
+                                if (loading) {
+                                    // 重新加载成功开始时清掉上一次的断网/证书错误提示。
+                                    pageError = null
+                                }
                             },
                             onProgressChanged = { nextProgress ->
                                 progress = nextProgress
@@ -757,6 +769,7 @@ private fun RemoteControlTopBar(
         modifier = Modifier
             .fillMaxWidth()
             .statusBarsPadding()
+            .horizontalNavigationBarsPadding()
             .height(48.dp)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -971,6 +984,21 @@ private fun createRemoteControlWebView(
             }
         }
     }
+}
+
+/**
+ * 横屏/平板上三键导航栏可能贴在屏幕右侧，只处理底部 inset 会让 Close 等按钮被压住。
+ */
+@Composable
+private fun Modifier.horizontalNavigationBarsPadding(): Modifier {
+    val density = LocalDensity.current
+    val layoutDirection = LocalLayoutDirection.current
+    val left = WindowInsets.navigationBars.getLeft(density, layoutDirection)
+    val right = WindowInsets.navigationBars.getRight(density, layoutDirection)
+    return padding(
+        start = with(density) { left.toDp() },
+        end = with(density) { right.toDp() },
+    )
 }
 
 /**

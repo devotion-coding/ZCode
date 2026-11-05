@@ -125,4 +125,14 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 - `MainActivity`：`configChanges`、`windowSoftInputMode=adjustResize`、`launchMode=singleTop`
 - 权限包含 `INTERNET`、`CAMERA`、`RECORD_AUDIO`、`FOREGROUND_SERVICE_DATA_SYNC`
 
-当前构建环境没有 `/dev/kvm`，无法运行 Android 模拟器，因此真机/模拟器交互验收需要在有设备的环境补做。
+在无 `/dev/kvm` 的 x86_64 软件模拟器（TCG，Android 11 / API 30）上使用 Debug 包完成：
+
+- 冷启动、首页渲染、WebView 加载本地测试页；
+- 软键盘弹出时 WebView 从 `360x520` 缩到 `360x257`，输入框保持在键盘上方；
+- 横竖屏切换后页面 `marker` 和 `loads` 不变，确认未重载；横屏三键导航栏不再压住 Close；
+- 文件选择器能打开并进入 Downloads；
+- 麦克风权限弹窗出现，授权后 WebView 的 `getUserMedia` 到达音频源（模拟器用 `-no-audio` 启动，真实采集需真机）；
+- 杀死 WebView 渲染进程后 App 未崩溃，页面自动重建并加载；
+- 返回键回到首页，前台保活服务同步停止。
+
+模拟器没有硬件加速，交互延迟不代表真机性能；真实网络、OAuth 回调、相机扫码和麦克风采集仍建议在真机上验收。
